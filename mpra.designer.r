@@ -3,40 +3,92 @@
 
 ### To do
 # - Unify mask format into a comma-separated range not data.frame
+# - add scramble
+# - drop anchors with "None" motifs
+# - design parameter sheet in the xlsx file
+# - frequency of each TF combination
+#	before & after random selection of PRDM1-only 
+# - freaeuency of tf combination in conjunction with motif
+# IMPORTANT: if downsampling is to be done (per TF combinations), motif scanning better be done before the downssampling
+#	because of any missing motif instance due to higher marginal score
+# - validation of meme motif names using read_meme in universalmotif
+
 
 library(tidyverse)
 library(Biostrings)
 library(openxlsx)
+library(ggplot2)
+#library(PWMEnrich)
+library(dplyr)
+library(universalmotif)
+library(Biostrings)
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library('yaml', quiet=TRUE)
 
 source(sprintf("%s/commonR.r", Sys.getenv("COMMON_LIB_BASE")))
-source(sprintf("%s/basicR.r", Sys.getenv("COMMON_LIB_BASE")))
 source(sprintf("%s/motifR.r", Sys.getenv("COMMON_LIB_BASE")))
+source(sprintf("%s/basicR.r", Sys.getenv("COMMON_LIB_BASE")))
 source(sprintf("%s/genomeR.r", Sys.getenv("COMMON_LIB_BASE")))
-source("MPRA.common.r")
+source("../MPRA.common.r")
+
+config = yaml.load_file("./config.MPRA.yml")
 
 
-#source(sprintf("%s/scRNAseq/seurat.common.r", Sys.getenv("LIMLAB_BASE")))
+## Required config elements
+configElemL=c(
+	"main_title",
+	"src_anchor",
+	"src_cobind",
+	"src_motif",
+	"motifNameL",
+	"adapter5",
+	"adapter3",
+	"scanWindow",
+	"genome",
+	"mutationMode",
+	"pv1",
+	"pv2"
+)
 
-src.anchor = "Data.Peak/DE_Ctrl_PRDM1.bed"
-src.overlap = "Data.Peak/Overlap_PF.txt"
-srcL.motif = list()
-srcL.motif[["PRDM1"]] = "Data.Motif/prdm1.motif"
-srcL.motif[["EOMES"]] = "Data.Motif/eomes.motif"
-srcL.motif[["FOXA"]] = "Data.Motif/foxa1_1_FG.motif"
-srcL.motif[["GATA"]] = "Data.Motif/gata4.motif"
-srcL.motif[["SOX17"]] = "Data.Motif/sox17.motif"
+for( elem in configElemL ) stopifnot(elem %in% names(config))
+
+## Config elements and validation
+main_title 	= config[["main_title"]]
+src.anchor 	= config[["src_anchor"]]
+src.cobind	= config[["src_cobind"]]
+src.motif 	= config[["src_motif"]]
+motifNameL	= config[["motifNameL"]]
+downsampleL = config[["downsample"]]
+adapter5	= config[["adapter5"]]
+adapter3	= config[["adapter3"]]
+scanWindow	= config[["scanWindow"]]
+genome		= config[["genome"]]
+mutationMode = config[["mutationMode"]]
+pv1 		= config[["pv1"]]
+pv2 		= config[["pv2"]]
+
+stopifnot(pv2 >= pv1)
+if(!is.null(downsampleL)) stopifnot(all(unlist(downsampleL) > 0))
+
+##############################
+## Destination files
+des.log = "log.txt"
+
+des.scan.fa = "anchor.scan.fa"
+des.scan.bed = "anchor.scan.bed"
+des.fimo = "anchor.fimo.txt"
+des.motif = "motif.meme"
+
+des.comboBarplot = "barplot.TF_combo.pdf"
+desPrefix.maskOverlap = "maskOverlap"
+
+desPrefix = "mpra"
 
 
-# motif scan window size and genome
-scanWindow = 270
-genome = "hg38"
-mutationMode = "shuffle"
-# fraction of PRDM1-only peaks to retain
-anchorOnlyFrac = 0.1
-
-src.anchor.fa = sprintf("DE_Ctrl_PRDM1.%sbp.fa", scanWindow)
-src.anchor.bed = sprintf("DE_Ctrl_PRDM1.%sbp.bed", scanWindow)
-des.log = sprintf("log.txt")
+# initial counts
+N.motif = length(motifNameL)
 
 
 
@@ -45,18 +97,43 @@ writeLog("=====================================
 MPRA-ChIP:Designer
 =====================================", des.log, append=FALSE)
 
-writeLog(sprintf("
-- anchor bed file: %s
-- TF overlap table: %s
-- Motif list:
+writeLog(sprintf("- Title: %s
+- Anchor bed file: %s
+- TF overlap table: %s",
+	main_title,
+	src.anchor,
+	src.cobind),
+	des.log, append=TRUE) 
+
+writeLog(sprintf("- Motif file: %s
+- Motif names:
 %s
 - Motif scan window: %d bp
 - Genome: %s
-- Mutation mode: %s
-- Anchor TF only fracdtion: %.02f",
-	src.anchor, src.overlap,
-	paste(sprintf("\t%s : %s", names(srcL.motif), unlist(srcL.motif)), collapse="\n"),
-	scanWindow, genome, mutationMode, anchorOnlyFrac), 
+- P-value
+\tStringent: %.e
+\tMarginal: %.e",
+	src.motif,
+	paste(sprintf("\t%s", motifNameL), collapse="\n"),
+	scanWindow,
+	genome,
+	pv1,
+	pv2),
+	des.log, append=TRUE) 
+
+
+writeLog(sprintf("- Downsampling
+%s",
+	paste(sprintf("\t%s: %d", names(downsampleL), unlist(downsampleL)), collapse="\n")),
+	des.log, append=TRUE) 
+
+writeLog(sprintf("- Mutation mode: %s
+- Adapter
+\t5': %s
+\t3': %s,",
+	mutationMode,
+	pv1,
+	pv2),
 	des.log, append=TRUE)
 writeLog("", des.log, append=TRUE)
 
@@ -64,249 +141,273 @@ writeLog("", des.log, append=TRUE)
 
 
 ###############################
-## Step 0: TF overlap Boolean table
+## Step 0: TF overlap Boolean table & MEME motif validation
 # Note: need to reimplemented in a generalized form
-writeLog(sprintf("%s: Reading TF overlap table - %s", Sys.time(), src.overlap), des.log, append=TRUE)
-data.overlap = read.delim(src.overlap, header=TRUE, row.names=4, stringsAsFactors=FALSE)
-df.cobind = data.frame(PRDM1 = TRUE,
-						EOMES = data.overlap$EOMES > 0,
-						FOXA = data.overlap$FOXA2_maki > 0,
-						GATA = data.overlap$GATA4_DE_WT | data.overlap$GATA6_DE_WT,
-						SOX17 = data.overlap$SOX17 > 0)
-rownames(df.cobind) = rownames(data.overlap)
-writeLog(sprintf("%s: Writing TF overlap stat. - %s", Sys.time(), "factorCobindStat.txt"), des.log, append=TRUE)
-df.tfStat = apply(df.cobind, 2, sum)
-write.table( data.frame(df.tfStat), "factorCobindStat.txt", row.names=TRUE, col.names=FALSE, quote = FALSE, sep="\t" )
+
+# overlap table
+writeLog(sprintf("%s: Reading TF overlap table - %s", Sys.time(), src.cobind), des.log, append=TRUE)
+data.cobind = read.delim(src.cobind, header=TRUE, row.names=4, stringsAsFactors=FALSE)
+df.cobind = data.frame(data.cobind[,6:ncol(data.cobind)] > 0)
+rownames(df.cobind) = rownames(data.cobind)
+#anchorNameL = rownames(data.cobind)
+stopifnot(all(motifNameL %in% colnames(df.cobind)))
+df.cobind = df.cobind[,motifNameL]
+
+# MEME moti names & filtering
+writeLog(sprintf("%s: Filtering motifs", Sys.time()), des.log, append=TRUE)
+motifL = read_meme(src.motif)
+stopifnot(all(motifNameL %in% sapply(motifL, function(x) x@altname)))
+writeLog(sprintf("%s: Saving %s", Sys.time(), des.motif), des.log, append=TRUE)
+motifL = filter_motifs(motifL, altname=motifNameL)
+write_meme(motifL, "motif.meme", overwrite=TRUE)
 
 
-## Random selection of anchor-only sites
-if(anchorOnlyFrac < 1){
-	writeLog(sprintf("%s: Selecting party of anchor-only sites randomly", Sys.time()), des.log, append=TRUE)
-	anchorOnly.all = names(which(apply(df.cobind, 1, function(x) all(x[-1]==FALSE))))
-	anchorOnly.select = sample(anchorOnly.all, length(anchorOnly.all)*anchorOnlyFrac)
-	anchorOnly.discard = setdiff(anchorOnly.all, anchorOnly.select)
+#writeLog(sprintf("%s: Writing TF overlap stat. - %s", Sys.time(), "factorCobindStat.txt"), des.log, append=TRUE)
+#df.tfStat = apply(df.cobind, 2, sum)
+#write.table( data.frame(df.tfStat), "factorCobindStat.txt", row.names=TRUE, col.names=FALSE, quote = FALSE, sep="\t" )
+
+
+
+## anchor bed and sequence
+# load / resize / reorder (to match cobind)
+writeLog(sprintf("%s: Resizing scan window and extracting DNA sequences - %s", Sys.time(), des.scan.fa), des.log, append=TRUE)
+scan.bed = resizeBed(readBedFile(src.anchor), scanWindow)
+colnames(scan.bed) = c("Chr","Start","End","Name","Null","Direc")
+stopifnot(setequal(rownames(df.cobind), scan.bed[,4]))
+rownames(scan.bed) = scan.bed$Name
+anchorNameL = scan.bed$Name
+# reordering of cobind table to match with anchor
+df.cobind = df.cobind[anchorNameL,]
+writeBedFile(scan.bed, des.scan.bed)
+
+if(file.exists(des.scan.fa)){
+	scan.fa = readDNAStringSet(des.scan.fa)
+	stopifnot(all(names(scan.fa) == anchorNameL))
 }else{
-	writeLog(sprintf("%s: Using all anchor-only sites ", Sys.time()), des.log, append=TRUE)
-	anchorOnly.all = rownames(df.cobind)
-	anchorOnly.select = anchorOnly.all
-	anchorOnly.discard = NULL
+	scan.fa = extractDNA(scan.bed, genome)
+	scan.fa = scan.fa[anchorNameL]
+	writeXStringSet(scan.fa, des.scan.fa)
 }
-anchorName.select = setdiff(rownames(df.cobind), anchorOnly.discard)
-writeLog(sprintf("%s: Total %d anchor selected", Sys.time(), length(anchorName.select)), des.log, append=TRUE)
-df.cobind.select = df.cobind[anchorName.select,]
-
-
-
-###############################
-## Step 1: 
-# motif scan window
-writeLog(sprintf("%s: Reading anchor file - %s", Sys.time(), src.anchor), des.log, append=TRUE)
-bed.anchor= readBedFile(src.anchor)
-rownames(bed.anchor) = bed.anchor[,4]
-colnames(bed.anchor) = c("Chr","Start","End","AnchorName","Score","Direc")
-stopifnot(setequal(bed.anchor[,4], rownames(df.cobind)))
-bed.anchor.select = bed.anchor[anchorName.select,]
-bed.anchor.select = resizeBed(bed.anchor.select, scanWindow)
-# 4th column must be unique value
-writeLog(sprintf("%s: Total number of anchor regions - %d", Sys.time(), nrow(bed.anchor)), des.log, append=TRUE)
-writeBedFile(bed.anchor.select, src.anchor.bed)
-
-
-
-# DNA sequence to scan the motif
-if(file.exists(src.anchor.fa)){
-	writeLog(sprintf("%s: Reading existing anchor fasta file - %s", Sys.time(), src.anchor.fa), des.log, append=TRUE)
-	data.fa = readDNAStringSet(src.anchor.fa)
-	if(!setequal(names(data.fa), bed.anchor.select[,4])){
-		writeLog(sprintf("%s: Exsiting fasta file doesn't match with anchor bed file; re-generating", Sys.time(), src.anchor.fa), des.log, append=TRUE)
-		data.fa = extractDNA(bed.anchor.select, genome, des=src.anchor.fa)
-	}
-}else{
-	writeLog(sprintf("%s: Extracting genomic sequence and creating %s", Sys.time(), src.anchor.fa), des.log, append=TRUE)
-	data.fa = extractDNA(bed.anchor.select, genome, des=src.anchor.fa)
-}
-# reorder to match bed.anchor.select
-data.fa=data.fa[anchorName.select]
-
-# tmp1 = table(boolTableToVector(df.cobind))
-# tmp2 = table(boolTableToVector(df.cobind.select))
-
-# tmp2 = sort(table(boolTableToVector(df.cobind.select )), decreasing=TRUE)
-# writeLog(sprintf("Count of TF combinations
-# %s", paste(sprintf("\t%s - %d", names(tmp2), tmp2), collapse="\n")),
-# 	des.log, append=TRUE)
-
-# barplot(matrix(cbind(as.numeric(tmp1), as.numeric(tmp2))))
-
-# counts
-N.motif = length(srcL.motif)
-motifNameL = names(srcL.motif)
-N.anchor = nrow(bed.anchor.select)
-
 
 
 
 
 ###############################
 ## Step 2: Initial motif scan
-# Output:
-#	resultL[[motifName]][[instance]]:	data.frame of identified motif instance
-#	resultL[[motifName]][[status]]:		vector of motif scan status in all achor windows
-motifScanL=list()
-for( motifName in names(srcL.motif) ){
-	# motifName = "PRDM1"
-	write(sprintf("Scanning %s: %s", motifName, srcL.motif[[motifName]]), stderr())
-	motif = readMotif.Homer(srcL.motif[[motifName]])
-	#if(!is.null(motifScanL[[motifName]])) next
-	motifScanL[[motifName]] = scanMotifMPRA(data.fa, motif$PWM, motif$threshold, 0, parallel=4, verbose=TRUE)
-}
 
-## motif scan stat
-# Write a motif scan statistics table
-df.stat = motifScanListToCntTable(motifScanL)
-write.table(df.stat, sprintf("motifStat.0.prelim.txt"), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+# Initial FIMO Output:
+#	a list of 
+#	- instance: data.frame of identified motif instance in a format
+#		Name: sequence name to scan
+#		Offset: starting location (1-base) within the sequence
+#		Score: motif score
+#		Direc: motif direction +/-
+#		Seq: identified motif instance sequence
+#	- status: vector of scan status, same length with the number of input sequence
+#		the status vector has one of Stringent / Marginal / None
+#		each element denote the status of the motif scan
+#			Stringent: stringent instance found with score > cutoff1, can be more than one instances
+#			Marginal: single instance of motif found with maximum score > cutoff2
+#			None: no instance found i.e. score is < cutoff2 in all position / strand
+# Action
+# - drop marginal instances when an anchor has stringent ones
+# - select best marginal one(s) if no stringent instances per anchor
+writeLog(sprintf("%s: Fimo motif scan - %s", Sys.time(), des.fimo), des.log, append=TRUE)
+fimoL = scanMemeMPRA(des.scan.fa, des.motif, pv1, pv2, motifNameL, des.fimo=des.fimo, verbose=FALSE)
 
-# debug code
-if(FALSE){
-	# number of identified motif instances stratified by types
-	sapply(motifScanL, function(x) table(x$status))
-	# number of anchors that has at least one motif either stringent or marginal
-	sapply(motifScanL, function(x) length(unique(x$instance$Name)))
-}
-
-
-###############################
-## Step 2: Filtering motif instances by TF overlap
-# Select motif instances corresponding to TF overlap only
-motifScanL.filtered = filterMotifByTF(motifScanL, df.cobind.select)
-df.stat.filtered = motifScanListToCntTable(motifScanL.filtered)
-write.table(df.stat.filtered, sprintf("motifStat.1.withTF.txt"), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
-
-
-
-
-## data.frame
-df.motifStatus.raw = motifScanListToStatusTable(motifScanL)
-df.motifStatus.filtered = motifScanListToStatusTable(motifScanL.filtered)
-
+## reformatting of FIMO results
+# List of motif --> Data.frame
+#	- instance: N x M data.frame where N is the number of anchors and M is the number of motifs
+#	- status: data.frame of the same dimension denoting the status of the motif, i.e. stringent / marginal / none
+writeLog(sprintf("%s: Converting FIMO results to data.frame", Sys.time()), des.log, append=TRUE)
+df.fimo = makeFimoDataFrame(fimoL, anchorNameL, motifNameL)
 
 
 
 ###############################
-# Motif mask generation in 1-base cooridnate
-maskL.stringent = list()
-maskL = list()
-for( name in names(motifScanL.filtered) ){
-	# name = "EOMES"
-	instance = motifScanL.filtered[[name]]$instance
-	status = motifScanL.filtered[[name]]$status
-	instance.stringent = instance[status[instance$Name]=="Stringent",]
+## Step 3: Filtering motif instances by TF overlap
+writeLog(sprintf("%s: Intersecting cobinding x motif scan", Sys.time()), des.log, append=TRUE)
+## Intersection of cobind x motif scan
+# - Ignore motif instances without cobinding
+# - drop anchors without desired motif but only with cobinding
+stopifnot(all(rownames(df.cobind) == rownames(df.fimo[["status"]])))
+result.intersect = intersectCobindMotif(df.cobind, df.fimo)
+df.cobind.filtered = result.intersect[["cobind"]]
+df.fimo.filtered = result.intersect[["motifScan"]]
+comboNameL = boolTableToVector(df.cobind.filtered)
 
-	maskL.stringent[[name]] = instanceToMask(instance.stringent)
-	maskL[[name]] = instanceToMask(instance)
+## Frequency of combinations before downsampling
+freq.cobind = getComboFrequency(df.cobind)
+freq.intersect = getComboFrequency(df.cobind.filtered)
+
+
+
+## Optional downsampling
+## Note: PERMANENT CHAGE
+#	- df.cobind.filered
+#	- df.fimo.filtered
+# Optional subsequent sorting to preserve the original order, but not implemented yet
+
+# anchor name vector to use down the road
+anchorNameL.filtered = rownames(df.cobind.filtered)
+if( ! is.null(downsampleL) ){
+	writeLog(sprintf("%s: Downsampling\n%s",
+				Sys.time(),
+				paste(sprintf("\t- %s: %d", names(downsampleL), unlist(downsampleL)), collapse="\n")),
+			des.log, append=TRUE)
+	df.cobind.filtered = downsampleCombo(df.cobind.filtered, downsampleL)
+	anchorNameL.filtered = rownames(df.cobind)[rownames(df.cobind) %in% rownames(df.cobind.filtered)]
+	df.cobind.filtered = df.cobind.filtered[anchorNameL.filtered,]
+	df.fimo.filtered[["instance"]] = df.fimo.filtered[["instance"]][anchorNameL.filtered,]
+	df.fimo.filtered[["status"]] = df.fimo.filtered[["status"]][anchorNameL.filtered,]
 }
+# DNA sequence after downampling
+scan.fa.filtered = scan.fa[rownames(df.cobind.filtered)]
+
+
+writeLog(sprintf("%s: Visualizing TF combination counts - %s", Sys.time(), des.comboBarplot), des.log, append=TRUE)
+# Frequencies after downsampling
+freq.down = getComboFrequency(df.cobind.filtered)
+stopifnot(all(names(freq.cobind) == names(freq.intersect)))
+stopifnot(all(names(freq.cobind) == names(freq.down)))
+df.freq = data.frame(Cobind = freq.cobind, Intersect = freq.intersect, Downsample = freq.down)
+
+## combo frequency barplot
+N.crs = calcCrsCount(setNames(df.freq[,"Downsample"], rownames(df.freq)))
+g = drawComboFreqPlot(df.freq) +
+		labs(title = main_title, 
+			subtitle=sprintf("Frequency of combinations with TF\nNumber of expected CRS = %d", N.crs))
+ggsave(des.comboBarplot, g, width=8, height=8)
+
+
+
 
 ###############################
+## Step 4: Mask generation and mutation
+
+# Convert fimo motif instances to a list of mask data.frames
+writeLog(sprintf("%s: Converting motif instances to mask", Sys.time()), des.log, append=TRUE)
+maskL = instanceFimoToMask(df.fimo.filtered[["instance"]])
+
 ## Assess overlap between motif mask sets of two TFs
-# 1. between stringent only
-checkMaskOverlap(maskL.stringent, "maskOverlap.stringent")
-# 2. between stringent + marginal
-checkMaskOverlap(maskL, "maskOverlap.both")
+checkMaskOverlap(maskL, desPrefix.maskOverlap)
 
 
-# ###############################
-# # Combinatorial mutation
 
+################################
+# Step 5: Combinatorial mutation
+writeLog(sprintf("%s: Generating mutations", Sys.time()), des.log, append=TRUE)
 # prepare combination Boolean table for various numbers of TFs
 comboBoolTableL=list()
 for( i in 1:N.motif ) comboBoolTableL[[i]] = makeComboBoolTable(i)
 
 # Group masks by anchor names
 maskL.groupByAnchor = groupMaskByAnchor(maskL)
-df.mask = maskListToTable(maskL.groupByAnchor)[anchorName.select,]
 
 # Generate mutated sequence
-df.mut = generateMutatedSeqSet(data.fa, maskL.groupByAnchor, comboBoolTableL, mutationMode, maxTryDiff=5, validate=TRUE)
-#compareTwoStrings(df.mut[1,"Sequence"], df.mut[6,"Sequence"], df.mut[6,"Mask"], width=100)
+df.crs = generateMutatedSeqSet(scan.fa.filtered, maskL.groupByAnchor, comboBoolTableL, mutationMode, maxTryDiff=10, validate=TRUE)
+# Assitn unique id
+rownames(df.crs) = sprintf("CRS%05d", 1:nrow(df.crs))
 
-
-# temporary test code comparing sequences before and after mutation
 if(FALSE){
-	compareTwoSequence(as.character(data.fa[1]), df.mut[1,"Sequence"])
-	compareTwoSequence(as.character(data.fa[1]), data.seq[1])
+	# test code
+	wt = 1
+	mut = 4
+	compareTwoStrings(df.crs[wt,"Sequence"], df.crs[mut,"Sequence"], df.crs[mut,"Mask"], width=100)
 }
 
-## Motif score
 
 
-# ## Original max motif score
-# maxMotifScore.raw = NULL
-# for( motifName in names(motifScanL) ){
-# 	if(is.null(maxMotifScore.raw)){
-# 		maxMotifScore.raw = motifScanL[[motifName]]$maxScore0
-# 	}else{
-# 		maxMotifScore.raw = cbind(maxMotifScore.raw, motifScanL[[motifName]]$maxScore)
-# 	}
-# }
-# colnames(maxMotifScore.raw) = names(motifScanL)
+#####################################
+## Step 6: Motif score compare before and after mutation
+writeLog(sprintf("%s: Motif scan in designed sequences", Sys.time()), des.log, append=TRUE)
 
-## Mutated max motif score
-maxMotifScore.mut = getMaxMotifScore(df.mut$Sequence, srcL.motif, parallel=4)
-rownames(maxMotifScore.mut) = rownames(df.mut)
+## Mutated max motif score, including WT
+maxMotifScore.crs = getMaxMemeScore(setNames(df.crs$Sequence, rownames(df.crs)), des.motif, motifNameL, pv=0.01, des="crs.fimo.txt")
+stopifnot(all(rownames(maxMotifScore.crs) == rownames(df.crs)))
 
-# head(maxMotifScore.raw)
-head(maxMotifScore.mut,20)
-
-
+writeLog(sprintf("%s: Comparing motif scores before vs after mutation", Sys.time()), des.log, append=TRUE)
+# Note:The visualization functions below was from previous implementation of the motif score data.frame
+# 	where the rownames were the combiniation of anchor name and motif list.
+# 	Thus, the motif score data.frame is temporarily assigned with rownames to reuse the functions.
+tmp.score = maxMotifScore.crs
+rownames(tmp.score) = sprintf("%s:%s", df.crs$AnchorName, df.crs$MotifMutated)
 # motif score: WT vs Mutant for all
-compareMotifScoreAll("motifScoreCompareAll", maxMotifScore.mut, main="Motif Score WT vs Mut: All", mode="all")
-compareMotifScoreAll("motifScoreCompareAll.Target", maxMotifScore.mut, main="Motif Score WT vs Mut: Targeted Motifs", mode="target")
-compareMotifScoreAll("motifScoreCompareAll.Nontarget", maxMotifScore.mut, main="Motif Score WT vs Mut: Nontarget Motifs", mode="nontarget")
+compareMotifScoreAll("motifScoreCompareAll", tmp.score,
+		main="Motif Score WT vs Mut: All", mode="all")
+compareMotifScoreAll("motifScoreCompareAll.Target", tmp.score,
+		main="Motif Score WT vs Mut: Targeted Motifs", mode="target")
+compareMotifScoreAll("motifScoreCompareAll.Nontarget", tmp.score,
+		main="Motif Score WT vs Mut: Nontarget Motifs", mode="nontarget")
+compareMotifScoreAll("motifScoreCompareAll.Scramble", tmp.score,
+		main="Motif Score WT vs Scramble", mode="scramble")
 
 # motif score compare for each TF before vs after single TF motif mutation
-compareMotifScoreSingleMut("motifScoreComparePair.singleOnly",
-		maxMotifScore.mut,
-		main = "Motif Score WT vs Mut: Single Mutation Only",
-		mode = "exclusive")
-compareMotifScoreSingleMut("motifScoreComparePair.all",
-		maxMotifScore.mut,
-		main = "Motif Score WT vs Mut: Including Multiple Mutations",
-		mode="all")
+compareMotifScoreSingleMut("motifScoreComparePair.singleOnly", tmp.score,
+		main = "Motif Score WT vs Mut: Single Mutation Only", mode = "exclusive")
+compareMotifScoreSingleMut("motifScoreComparePair.all", tmp.score,
+		main = "Motif Score WT vs Mut: Including Multiple Mutations", mode="all")
+compareMotifScoreScramble("motifScoreComparePair.Scramble", tmp.score,
+		main="Motif Score WT vs Scramble")
+
+
+
+#################################
+## Step 7: output prep
+writeLog(sprintf("%s: Exporting results", Sys.time()), des.log, append=TRUE)
+
+exportDesign(desPrefix, config,
+	anchor = scan.bed[anchorNameL.filtered,],
+	crs = df.crs,
+	cobind = df.cobind.filtered[anchorNameL.filtered,],
+	motifStatus.raw = df.fimo[["status"]][anchorNameL.filtered,],
+	motifStatus.filtered = df.fimo.filtered[["status"]][anchorNameL.filtered,],
+	maxMotifScore = maxMotifScore.crs)
+
+
+
+
+q()
 
 
 
 
 
-data.mut = data.frame(Id = rownames(df.mut), df.mut, maxMotifScore.mut)
-
-names(df.cobind.select) = sprintf("Cobind.%s", names(df.cobind.select))
-names(df.motifStatus.raw) = sprintf("Motif.%s", names(df.motifStatus.raw))
-names(df.motifStatus.filtered) = sprintf("Motif.Cobind.%s", names(df.motifStatus.filtered))
-df.cobind.select = df.cobind.select[anchorName.select,]
-df.motifStatus.raw = df.motifStatus.raw[anchorName.select,]
-df.motifStatus.filtered = df.motifStatus.filtered[anchorName.select,]
-data.anchor = data.frame(
-	bed.anchor.select,
-	df.cobind.select,
-	df.motifStatus.raw,
-	df.motifStatus.filtered
-)
 
 
 
-######################################################
-## Output
 
 
-wb = createWorkbook("MPRA-ChIP")
-addWorksheet(wb, "Anchor")
-addWorksheet(wb, "Design")
-writeData(wb, sheet = 1, data.anchor)
-writeData(wb, sheet = 2, data.mut)
-saveWorkbook(wb, "mpra.design.xlsx", overwrite = TRUE)
+########################################################
+## Debug/test code
+if(FALSE){
+	tmp1 = boolTableToVector(df.mask!="NA")
+	tmp2 = df.cobind.select
+	colnames(tmp2) = sub("Cobind.","",names(tmp2))
+	tmp2 = boolTableToVector(tmp2)
 
-# plan
-# - design parameter sheet in the xlsx file
-# - frequency of each TF combination
-#	before & after random selection of PRDM1-only 
-# - freaeuency of tf combination in conjunction with motif
+	tmp1 = names(tmp1)[tmp1=="PRDM1"]
+	tmp2 = names(tmp2)[tmp2=="PRDM1"]
+	name.diff = setdiff(tmp1, tmp2)
+
+	df.cobind[name.diff,]
+	df.motifStatus.raw[name.diff,]
+	df.mask[name.diff,]
+	# df.cobind
+	# df.cobind.select
+	# df.motifStatus.raw
+	# #df.motifStatus.filtered  
+	# df.mask
+	#stopifnot(all( (df.motifStatus.filtered != "None") == (df.mask != "NA") ))
+	stopifnot( all(rownames(df.cobind.select) == rownames(df.motifStatus.raw)) )
+	stopifnot( all(rownames(df.cobind.select) == rownames(df.mask)) )
+}
+
+
+### adapter sequence motif score
+if(FALSE){
+	seq1="AGGACCGGATCAACT"
+	seq2="CATTGCGTGAACCGA"
+
+	tmp = getMaxMotifScore(c(seq1, seq2), srcL.motif)
+}
