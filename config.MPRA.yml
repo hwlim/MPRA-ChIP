@@ -1,0 +1,114 @@
+## Configuration for MPRA-ChIP CRS design
+
+
+#########################################
+# # Output
+# anchor.scan.bed : resized anchor bed file where motif scan was performed
+# anchor.scan.fa : fasta sequence for FIMO motif scan
+# anchor.fimo.txt : FIMO output of motif scan within anchor region
+# motif.meme : MEME motif file used for FIMO motif scan
+# barplot.TF_combo.pdf : Barplot of frequency of TF combinations
+# maskOverlap.<pdf,png> : Assessment of motif (mask) instances between a pair of TFs
+#
+# # max motif score for designed CRSs
+# crs.fimo.txt : FIMO motif scan within the desined CRS sequences (without adapters)
+#
+# # motif score compare (all TF aggregated): WT vs Mutations (and Scramble)
+# motifScoreCompareAll.png : All pairs of WT vs Mutations except for Scramble
+# motifScoreCompareAll.Target.png : WT vs Mutation of mutation-target motif score
+# motifScoreCompareAll.Nontarget.png : WT vs Mutation of non-mutation-target motif score
+# motifScoreCompareAll.Scramble.png : WT vs Scramble
+#
+# # motif score compare in detail
+# motifScoreComparePair.singleOnly.png : WT vs Mutation per motif for single motif mutation
+# motifScoreComparePair.all.png : WT vs Mutation per motif for multiple motif mutation
+# motifScoreComparePair.Scramble.png : WT vs Scramble per motif
+#
+# # Final outputs
+# mpra.anchor.txt : Final selectd anchor and metadata including cobinding / motif status before and after filtering
+# mpra.design.txt : Final designed CRS table including Id, anchor name, sequence (including adapters), comma-separated mutated motif, mask regions, maximum motif scores
+# mpra.crs.fa : Fasta file for the designed CRS including adapters 
+# mpra.xlsx : Comprehensive excel sheet including three sheets including parameters, anchor meta.data, CRS meta.data
+#
+# # log file
+# log.txt
+
+
+
+#########################################
+# Title
+# Used in figures
+main_title: "DE PRDM1"
+
+#########################################
+# Anchoring genomic regions to design CRS for MPRA experiment
+# - Motif scan is done within this regions after resizing (scanWindow)
+# - Must be in BED6 format with 4th column containing unique Id
+# - The anchor order in this file is the standard for other files and results to match
+src_anchor: ../../20240201-DE_FG_Peak_Replicates/DESeq2.byLim/DE_PRDM1/Diff.FC2.0_FDR0.100/peak.Up.bed
+
+#########################################
+# TF cobind table
+# (N + 1) X (6 + M) size where
+# Row:
+#   - First line: header e.g. Chr / Start / End / Name / Null / Direc / a list of TF names (matching the motif)
+#   - Next N lines are anchors
+# Columns:
+#   - First 6 columns are anchor in BED format with 4th column of unique anchor Id (the same set with anchor)
+#   - Rest M columns are TRUE/FALSE or the number of cobinding with a corresponding TF for each column
+src_cobind: ../Data.Peak/PeakByDESeq2/DE/Overlap_PF.txt
+
+#########################################
+# Motif information
+
+# MEME motif file containing all required motif; OK to have more than required
+src_motif: ../Data.Motif/HOCOMOCOv11/all.meme
+
+# Motif name list (ordered)
+# - Should be members of *alt_name* of meme motifs
+# - Should be members of the column names of the cobind table
+# - All the downstream analysis results will follow this order in the outputs and data.frame columns
+# - The listed motifs are selected from <src_motif> file and saved in ./motif.meme
+motifNameL:
+    - PRDM1
+    - EOMES
+    - FOXA
+    - GATA
+    - SOX17
+
+# Motif scan window size
+scanWindow: 270
+
+# Genome build
+genome: hg38
+
+# Motif scan p-value threshold
+# Stringent threshold.
+# All instances of motifs above this threshold are selected for mutation
+pv1: 0.0001
+# Marginal threshold, should be >= pv1
+# If no stringent instance found, single location with the lowest p-value below pv2 is selected for mutation
+pv2: 0.001
+
+
+
+#########################################
+# Design parameters
+
+# Optional downsampling
+# a list of pairs [ combo name : max number ]
+#   e.g. - X,Y: 10 means 10 site random sampling from X,Y cobinding
+# Note: this downsampling is done after intersecting TF cobinding X motif scan
+downsample:
+    PRDM1: 492
+
+# Flanking adapter sequences to add 5'/3' of the original/mutated sequences
+adapter5: AGGACCGGATCAACT
+adapter3: CATTGCGTGAACCGA
+
+# Mutation mode {random,shuffle}
+#   - random: random nucleotide
+#   - shuffle: DNA bases are shuffled within each mask
+mutationMode: shuffle
+
+
