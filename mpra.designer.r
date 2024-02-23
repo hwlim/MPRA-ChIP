@@ -42,12 +42,12 @@ configElemL=c(
 	"src_anchor",
 	"src_cobind",
 	"src_motif",
-	"motifNameL",
+	"motiflist",
 	"adapter5",
 	"adapter3",
-	"scanWindow",
+	"scan_window",
 	"genome",
-	"mutationMode",
+	"mutation_mode",
 	"pv1",
 	"pv2"
 )
@@ -59,18 +59,30 @@ main_title 	= config[["main_title"]]
 src.anchor 	= config[["src_anchor"]]
 src.cobind	= config[["src_cobind"]]
 src.motif 	= config[["src_motif"]]
-motifNameL	= config[["motifNameL"]]
+motifNameL	= config[["motiflist"]]
 downsampleL = config[["downsample"]]
 adapter5	= config[["adapter5"]]
 adapter3	= config[["adapter3"]]
-scanWindow	= config[["scanWindow"]]
+scanWindow	= config[["scan_window"]]
 genome		= config[["genome"]]
-mutationMode = config[["mutationMode"]]
+mutationMode = config[["mutation_mode"]]
 pv1 		= config[["pv1"]]
 pv2 		= config[["pv2"]]
 
+if( ! "run_mode" %in% names(config) ){
+		config[["run_mode"]] = "prelim"
+}
+run_mode = config[["run_mode"]]
+
+if( ! "name_prefix" %in% names(config) ){
+		config[["name_prefix"]] = "CRS"
+}
+name_prefix = config[["name_prefix"]]
+
+
 stopifnot(pv2 >= pv1)
-if(!is.null(downsampleL)) stopifnot(all(unlist(downsampleL) > 0))
+if(!is.null(downsampleL)) stopifnot(all(unlist(downsampleL) >= 0))
+stopifnot(run_mode %in% c("full","prelim"))
 
 ##############################
 ## Destination files
@@ -130,10 +142,12 @@ writeLog(sprintf("- Downsampling
 writeLog(sprintf("- Mutation mode: %s
 - Adapter
 \t5': %s
-\t3': %s,",
+\t3': %s
+- Name prefix: %s",
 	mutationMode,
 	pv1,
-	pv2),
+	pv2,
+	name_prefix),
 	des.log, append=TRUE)
 writeLog("", des.log, append=TRUE)
 
@@ -282,7 +296,12 @@ ggsave(des.comboBarplot, g, width=8, height=8)
 
 
 
-###############################
+## Stop here in prelim mode
+if(run_mode == "prelim") q()
+
+
+
+########################
 ## Step 4: Mask generation and mutation
 
 # Convert fimo motif instances to a list of mask data.frames
@@ -307,7 +326,7 @@ maskL.groupByAnchor = groupMaskByAnchor(maskL)
 # Generate mutated sequence
 df.crs = generateMutatedSeqSet(scan.fa.filtered, maskL.groupByAnchor, comboBoolTableL, mutationMode, maxTryDiff=10, validate=TRUE)
 # Assitn unique id
-rownames(df.crs) = sprintf("CRS%05d", 1:nrow(df.crs))
+rownames(df.crs) = sprintf("%s%05d", name_prefix, 1:nrow(df.crs))
 
 if(FALSE){
 	# test code

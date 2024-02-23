@@ -383,7 +383,7 @@ getMaxMemeScore=function(fa, meme, motifNameL, pv=0.01, des="crs.fimo.txt"){
 	#fimo = "fimo.mut.txt"
 	if(any(is.null(names(fa)))) names(fa) = sprintf("Seq%d", 1:length(fa))
 	writeXStringSet(DNAStringSet(fa), tmp.fa)
-	cmd=sprintf("runMemeFimo.Peak.sh -g hg38 -p %f %s %s > %s", pv, src.motif, tmp.fa, des)
+	cmd=sprintf("runMemeFimo.Peak.sh -g hg38 -p %f %s %s > %s", pv, meme, tmp.fa, des)
 	system(cmd)
 	unlink(tmp.fa)
 
@@ -1563,13 +1563,13 @@ exportDesign=function(desPrefix, config, anchor, crs, cobind, motifStatus.raw, m
 	df.config["Anchor",] = c("Anchor", config[["src_anchor"]], "")
 	df.config["TF Cobind",] = c("TF Cobind", config[["src_cobind"]], "")
 	df.config["Motif file",] = c("Motif file", config[["src_motif"]], "")
-	df.config["Scan Window",] = c("Scan Window", config[["scanWindow"]], "")
+	df.config["Scan Window",] = c("Scan Window", config[["scan_window"]], "")
 	df.config["Genome",] = c("Genome", config[["genome"]], "")
 	df.config["P-value stringent",] = c("P-value stringent", config[["pv1"]], "")
 	df.config["P-value marginal",] = c("P-value marginal", config[["pv2"]], "")
 	
 	df.config["Motif Names",] = c("Motif Names", "", "")
-	motifNameL = config[["motifNameL"]]
+	motifNameL = config[["motiflist"]]
 	for( i in 1:length(motifNameL) ){
 		motifName = motifNameL[i]
 		df.config[sprintf("Motif%d", i),] = c("", motifName, "")
@@ -1579,7 +1579,7 @@ exportDesign=function(desPrefix, config, anchor, crs, cobind, motifStatus.raw, m
 	df.config["Downsampling",] = c("Downsampling", "", "")
 	for( comboName in names(downsampleL) ) df.config[comboName,] = c("", comboName, sprintf("%d", downsampleL[[comboName]]))
 	
-	df.config["Mutation Mode",] = c("Mutation Mode", config[["mutationMode"]], "")
+	df.config["Mutation Mode",] = c("Mutation Mode", config[["mutation_mode"]], "")
 	df.config["adapter5",] = c("adapter5", adapter5, "")
 	df.config["adapter3",] = c("adapter3", adapter3, "")
 
