@@ -41,6 +41,13 @@
 main_title: "DE PRDM1"
 
 #########################################
+# Run mode
+# prelim or full
+# - prelim: stop before mutation design; just run until intersection of cobind vs motif followed by downsampling
+# - full: run all the way to the end including final design
+run_mode: full
+
+#########################################
 # Anchoring genomic regions to design CRS for MPRA experiment
 # - Motif scan is done within this regions after resizing (scanWindow)
 # - Must be in BED6 format with 4th column containing unique Id
@@ -69,7 +76,7 @@ src_motif: ../Data.Motif/HOCOMOCOv11/all.meme
 # - Should be members of the column names of the cobind table
 # - All the downstream analysis results will follow this order in the outputs and data.frame columns
 # - The listed motifs are selected from <src_motif> file and saved in ./motif.meme
-motifNameL:
+motiflist:
     - PRDM1
     - EOMES
     - FOXA
@@ -77,7 +84,7 @@ motifNameL:
     - SOX17
 
 # Motif scan window size
-scanWindow: 270
+scan_window: 220
 
 # Genome build
 genome: hg38
@@ -100,15 +107,18 @@ pv2: 0.001
 #   e.g. - X,Y: 10 means 10 site random sampling from X,Y cobinding
 # Note: this downsampling is done after intersecting TF cobinding X motif scan
 downsample:
-    PRDM1: 492
+    PRDM1: 500
 
 # Flanking adapter sequences to add 5'/3' of the original/mutated sequences
 adapter5: AGGACCGGATCAACT
 adapter3: CATTGCGTGAACCGA
 
+# prefix of sequence id: <prefix>######
+name_prefix: CRS_DE_
+
 # Mutation mode {random,shuffle}
 #   - random: random nucleotide
 #   - shuffle: DNA bases are shuffled within each mask
-mutationMode: shuffle
+mutation_mode: shuffle
 
 
